@@ -1,1 +1,1 @@
-JotunnModStub/Package/README.md
+Clans/Package/README.md

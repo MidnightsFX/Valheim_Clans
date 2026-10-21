@@ -1,0 +1,219 @@
+﻿using Jotunn.Configs;
+using System;
+using System.Collections.Generic;
+
+namespace Clans.Common {
+    enum ItemStat {
+        slash,
+        slash_per_level,
+        blunt,
+        blunt_per_level,
+        pierce,
+        pierce_per_level,
+        pickaxe,
+        pickaxe_per_level,
+        chop,
+        chop_per_level,
+        attack_force,
+        fire,
+        fire_per_level,
+        lightning,
+        lightning_per_level,
+        frost,
+        frost_per_level,
+        poison,
+        poison_per_level,
+        spirit,
+        spirit_per_level,
+        block_armor,
+        block_armor_per_level,
+        parry,
+        block_force,
+        block_force_per_level,
+        primary_attack_stamina,
+        primary_attack_eitr,
+        primary_attack_flat_health_cost,
+        primary_attack_percent_health_cost,
+        primary_attack_health_returned,
+        primary_attack_damage_bonus_per_missing_hp,
+        primary_attack_projectile_count,
+        primary_attack_force_multiply,
+        secondary_attack_stamina,
+        secondary_attack_eitr,
+        secondary_attack_force_multiply,
+        secondary_attack_flat_health_cost,
+        secondary_attack_percent_health_cost,
+        movement_speed,
+        bow_draw_speed,
+        crossbow_reload_speed,
+        crossbow_reload_stamina_drain,
+        draw_stamina_drain,
+        projectile_velocity,
+        projectile_accuracy_max,
+        durability,
+        durability_per_level,
+        max_item_level,
+        amount,
+        tool_level
+    }
+
+    enum ItemCategory {
+        Arrows,
+        Atgeirs,
+        Axes,
+        Hammers,
+        Shields,
+        Swords,
+        Bows,
+        Spears,
+        Knives,
+        Maces,
+        Fists,
+        Pickaxes,
+        Magics
+    }
+    class ItemDefinition {
+        // Metadata
+        public string Name {
+            get; set;
+        }
+        public string DisplayName {
+            get; set;
+        }
+        public ItemCategory Category {
+            get; set;
+        }
+        public string Prefab {
+            get; set;
+        }
+        // Optional. Names a sprite in Assets/Custom/Icons to use instead of whatever icon the prefab was
+        // authored with. Leave unset for an item that already carries its own.
+        public string Icon {
+            get; set;
+        }
+
+        // configurable
+        public string CraftedAt {
+            get; set;
+        }
+        public BepInEx.Configuration.ConfigEntry<string> CraftedAtCfg {
+            get; set;
+        }
+        public bool Craftable { get; set; } = true;
+        public BepInEx.Configuration.ConfigEntry<bool> CraftableCfg {
+            get; set;
+        }
+        public int ReqStationlevel {
+            get; set;
+        }
+        public BepInEx.Configuration.ConfigEntry<int> StationLVLCfg {
+            get; set;
+        }
+        public int CraftAmount {
+            get; set;
+        }
+        public BepInEx.Configuration.ConfigEntry<int> CraftAmountCfg {
+            get; set;
+        }
+        public Dictionary<ItemStat, ItemStatConfig> ModifableStats {
+            get; set;
+        }
+        public Dictionary<HitData.DamageType, HitCustomDamageMod> DamageMods {
+            get; set;
+        }
+        // Set on weapons made the way vanilla makes its Deep North gold weapons: a mould found in loot is filled at
+        // the crafting station to make a cast, and the Frost Foundry hardens the cast into the weapon. Null for every
+        // other item. See FrostForged.
+        public FrostForgedDefinition FrostForged {
+            get; set;
+        }
+
+        public RecipeDefinition Recipe {
+            get; set;
+        }
+    }
+
+    class FrostForgedDefinition {
+        // Vanilla mould this weapon's own mould is copied from (eg: MoldKnife). Ours drops wherever that one does.
+        public string Mould {
+            get; set;
+        }
+        // Vanilla cast this weapon's own cast is copied from, for its look (eg: KnifeGoldUncooked).
+        public string Cast {
+            get; set;
+        }
+        // Prefabs generated for this weapon, named after it.
+        public string MouldPrefab {
+            get; set;
+        }
+        public string CastPrefab {
+            get; set;
+        }
+        // Crafts the cast. Kept in step with the weapon's own recipe, which only upgrades the weapon.
+        public Recipe CastRecipe {
+            get; set;
+        }
+    }
+
+    class HitCustomDamageMod {
+        public bool Configurable { get; set; } = true;
+        public HitData.DamageModifier DamageModifier {
+            get; set;
+        }
+        public BepInEx.Configuration.ConfigEntry<string> DmgModCfg {
+            get; set;
+        }
+    }
+
+    class ItemStatConfig {
+        public bool Configurable { get; set; } = true;
+        public bool IsInt { get; set; } = false;
+        public float Default_value {
+            get; set;
+        }
+        public BepInEx.Configuration.ConfigEntry<float> Cfg {
+            get; set;
+        }
+        public BepInEx.Configuration.ConfigEntry<int> CfgInt {
+            get; set;
+        }
+        public float Min { get; set; } = 0f;
+        public float Max { get; set; } = 400f;
+    }
+
+    class RecipeDefinition {
+        public BepInEx.Configuration.ConfigEntry<string> RecipeConfig {
+            get; set;
+        }
+        public List<RecipeIngredient> RecipeItems {
+            get; set;
+        }
+        public List<RequirementConfig> RecipeReqs {
+            get; set;
+        }
+        public Recipe ResolvedRecipe {
+            get; set;
+        }
+
+        // A companion "craft N at once" recipe registered alongside the item's own. It always mirrors
+        // whatever the recipe above is configured to, with every ingredient cost and the crafted amount
+        // multiplied by N. Leave at 0 (or 1) for items that should only have their single-craft recipe.
+        public int BulkMultiplier { get; set; } = 0;
+        public BepInEx.Configuration.ConfigEntry<int> BulkMultiplierCfg {
+            get; set;
+        }
+        public Recipe ResolvedBulkRecipe {
+            get; set;
+        }
+    }
+
+    class RecipeIngredient {
+        public string Prefab {
+            get; set;
+        }
+        public int Amount {
+            get; set;
+        }
+        public int UpgradeCost { get; set; } = 0;
+    }
+}
