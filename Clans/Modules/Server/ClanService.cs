@@ -244,6 +244,7 @@ namespace Clans.Server {
             };
             clan.NextRankId = clan.Ranks.Count + 1;
             state.Clans[clan.Id] = clan;
+            ApiEvents.ClanFounded(clan, founderAccount, founderName);
             AddMember(clan, founderAccount, founderName, ClanRules.LeaderRank(clan).Id);
             ClanRules.Log(clan, "$clans_log_founded", founderName, name);
             Broadcaster.MarkDirectory();
@@ -293,9 +294,12 @@ namespace Clans.Server {
             PartyService.OnClanChanged(account);
             BountyRelay.OnMemberAdded(clan, account);
             Broadcaster.MarkMember(clan.Id, account);
+            ApiEvents.MemberJoined(clan, account);
         }
 
-        private static void RemoveMember(ClanRecord clan, string account) {
+        // reason, for other mods (Clans.API): "left" or "kicked".
+        private static void RemoveMember(ClanRecord clan, string account, string reason) {
+            string name = ClanRules.Member(clan, account)?.LastCharacterName;
             clan.Members.Remove(account);
             AccountRecord record = ClanRules.Account(account);
             if (record != null && record.ClanId == clan.Id) { record.ClanId = 0; }
@@ -304,6 +308,7 @@ namespace Clans.Server {
             BountyRelay.OnMemberRemoved(clan, account);
             Broadcaster.MarkMember(clan.Id, account);
             ClanStore.MarkDirtySoon();
+            ApiEvents.MemberLeft(clan, account, name, reason);
         }
 
         // ---------------------------------------------------------------- applications
@@ -407,7 +412,7 @@ namespace Clans.Server {
                 request.Ok();
                 return;
             }
-            RemoveMember(clan, request.Sender.Account);
+            RemoveMember(clan, request.Sender.Account, "left");
             ClanRules.Log(clan, "$clans_log_left", request.Sender.CharacterName);
             request.Ok();
         }
@@ -421,7 +426,7 @@ namespace Clans.Server {
             if (ClanRules.Can(clan, request.Sender.Account, ClanPermission.Kick) == false) { request.Fail("$clans_err_no_permission"); return; }
             if (ClanRules.Outranks(clan, request.Sender.Account, target) == false) { request.Fail("$clans_err_outranked"); return; }
 
-            RemoveMember(clan, target);
+            RemoveMember(clan, target, "kicked");
             ClanRules.Log(clan, "$clans_log_kicked", member.LastCharacterName, request.Sender.CharacterName);
             Notify(target, "$clans_notice_kicked", clan.Name);
             request.Ok();
@@ -449,6 +454,7 @@ namespace Clans.Server {
             if (actorIndex >= oldIndex || actorIndex >= newIndex) { request.Fail("$clans_err_outranked"); return; }
 
             member.RankId = rankId;
+            ApiEvents.RankChanged(clan, target);
             // Storage rights may have changed: a shared tab open under the old rank is closed.
             StorageService.CloseLeasesOf(target, "$clans_storage_closed_rank", sharedOnly: true);
             string rankName = clan.Ranks[newIndex].Name;
@@ -471,6 +477,8 @@ namespace Clans.Server {
             member.RankId = ClanRules.LeaderRank(clan).Id;
             // The old leader steps down one rank.
             self.RankId = clan.Ranks[Math.Min(1, clan.Ranks.Count - 1)].Id;
+            ApiEvents.RankChanged(clan, target);
+            ApiEvents.RankChanged(clan, request.Sender.Account);
             StorageService.CloseLeasesOf(request.Sender.Account, "$clans_storage_closed_rank", sharedOnly: true);
             ClanRules.Log(clan, "$clans_log_new_leader", member.LastCharacterName, request.Sender.CharacterName);
             NotifyClan(clan, request.Sender.Account, "$clans_notice_new_leader", member.LastCharacterName);
@@ -509,6 +517,7 @@ namespace Clans.Server {
                 PartyService.OnClanChanged(account);
                 BountyRelay.OnMemberRemoved(clan, account);
                 Broadcaster.MarkAccount(account);
+                ApiEvents.MemberLeft(clan, account, clan.Members[account].LastCharacterName, "disbanded");
             }
             foreach (ApplicationRecord application in clan.Applications) {
                 ClanRules.Account(application.Account)?.PendingApplications.Remove(clan.Id);
@@ -519,6 +528,7 @@ namespace Clans.Server {
             Broadcaster.MarkDirectory();
             Broadcaster.MarkRoster();
             ClanStore.MarkDirtySoon();
+            ApiEvents.ClanDisbanded(clan);
             Logger.LogInfo($"Clan '{clan.Name}' (id {clan.Id}) was disbanded by {byName}.");
         }
 
@@ -624,12 +634,14 @@ namespace Clans.Server {
             // Members of a removed rank drop to the highest rank (in the new order) of those that were below it,
             // so nobody ends up above a rank that outranked them.
             HashSet<int> keptIds = new HashSet<int>(result.Select(r => r.Id));
+            List<string> moved = new List<string>();
             foreach (MemberRecord member in clan.Members.Values) {
                 if (keptIds.Contains(member.RankId)) { continue; }
                 int oldIndex = clan.Ranks.FindIndex(r => r.Id == member.RankId);
                 HashSet<int> below = new HashSet<int>(clan.Ranks.Skip(Math.Max(0, oldIndex) + 1).Select(r => r.Id));
                 RankDef target = result.FirstOrDefault(r => below.Contains(r.Id));
                 member.RankId = target != null ? target.Id : entry.Id;
+                moved.Add(member.Account);
                 Broadcaster.MarkAccount(member.Account);
             }
             // Storage rights may have changed for anyone: open shared tabs are closed.
@@ -639,7 +651,11 @@ namespace Clans.Server {
             ClanRules.Log(clan, "$clans_log_ranks", request.Sender.CharacterName);
             foreach (string account in clan.Members.Keys) { Broadcaster.MarkAccount(account); }
             Broadcaster.MarkDetail(clan.Id);
+            // Everyone sees members' rank names and positions on the roster.
+            Broadcaster.MarkRoster();
             ClanStore.MarkDirty();
+            ApiEvents.RanksChanged(clan);
+            foreach (string account in moved) { ApiEvents.RankChanged(clan, account); }
             request.Ok();
         }
 

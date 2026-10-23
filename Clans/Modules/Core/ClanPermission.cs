@@ -47,6 +47,14 @@ namespace Clans.Core {
 
         internal static bool Has(this ClanPermission value, ClanPermission flag) => (value & flag) == flag;
 
+        // What a member at this rank position (0 is the leader) may actually do, given the rank's stored rights.
+        internal static ClanPermission Effective(int rankIndex, ClanPermission stored) {
+            ClanPermission permissions = rankIndex == 0 ? All : stored;
+            // Switched off for everyone, the leader included.
+            if (Settings.ClansConfig.TreasuryWithdrawEnabled.Value == false) { permissions &= ~ClanPermission.TreasuryWithdraw; }
+            return permissions;
+        }
+
         // Localization token for a permission's display name.
         internal static string Token(ClanPermission flag) => "$clans_perm_" + flag.ToString().ToLowerInvariant();
     }

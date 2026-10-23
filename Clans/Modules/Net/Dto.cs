@@ -16,16 +16,19 @@ namespace Clans.Net {
         internal bool Recruiting;
         internal string LeaderName = "";
         internal string Description = "";
+        // For other mods (Clans.API): who leads every clan, not only the player's own.
+        internal string LeaderAccount = "";
 
-        internal static void Write(ZPackage pkg, ClanRecord clan, int level, string leaderName) {
+        internal static void Write(ZPackage pkg, ClanRecord clan, int level, MemberRecord leader) {
             pkg.Write(clan.Id);
             pkg.Write(clan.Name ?? "");
             (clan.Emblem ?? new EmblemData()).Write(pkg);
             pkg.Write(level);
             pkg.Write(clan.Members.Count);
             pkg.Write(clan.Recruiting);
-            pkg.Write(leaderName ?? "");
+            pkg.Write(leader?.LastCharacterName ?? "");
             pkg.Write(clan.Description ?? "");
+            pkg.Write(leader?.Account ?? "");
         }
 
         internal static ClanSummary Read(ZPackage pkg) {
@@ -38,6 +41,7 @@ namespace Clans.Net {
                 Recruiting = pkg.ReadBool(),
                 LeaderName = pkg.ReadString(),
                 Description = pkg.ReadString(),
+                LeaderAccount = pkg.ReadString(),
             };
         }
     }
@@ -99,6 +103,13 @@ namespace Clans.Net {
         internal long RaidId;
         internal int Squad;
         internal bool PartyLeader;
+        // Their rank in their clan, so other mods (Clans.API) can tell anyone's rank, not only clanmates'.
+        // RankIndex 0 is the leader, -1 when not in a clan; RankName is as stored (a token for untouched defaults).
+        internal int RankId;
+        internal int RankIndex = -1;
+        internal string RankName = "";
+        // Leads their raid, so other mods can tell any raid's leader (Clans.API).
+        internal bool RaidLeader;
 
         internal void Write(ZPackage pkg) {
             pkg.Write(Account ?? "");
@@ -108,6 +119,10 @@ namespace Clans.Net {
             pkg.Write(RaidId);
             pkg.Write(Squad);
             pkg.Write(PartyLeader);
+            pkg.Write(RankId);
+            pkg.Write(RankIndex);
+            pkg.Write(RankName ?? "");
+            pkg.Write(RaidLeader);
         }
 
         internal static RosterEntry Read(ZPackage pkg) {
@@ -119,6 +134,10 @@ namespace Clans.Net {
                 RaidId = pkg.ReadLong(),
                 Squad = pkg.ReadInt(),
                 PartyLeader = pkg.ReadBool(),
+                RankId = pkg.ReadInt(),
+                RankIndex = pkg.ReadInt(),
+                RankName = pkg.ReadString(),
+                RaidLeader = pkg.ReadBool(),
             };
         }
     }
@@ -323,5 +342,60 @@ namespace Clans.Net {
         internal MemberInfo Member(string account) => Members.Find(m => m.Account == account);
 
         internal int Contributed(string item) => Contributions.TryGetValue(item, out int amount) ? amount : 0;
+    }
+
+    // What a clan's shared tabs hold, for other mods (Clans.API). A tab someone has open is as they last sent it.
+    internal sealed class StorageContents {
+        internal sealed class Item {
+            internal int Tab;
+            // "" when the server does not know the item.
+            internal string Prefab = "";
+            internal int Stack;
+            internal int Quality;
+            internal int X;
+            internal int Y;
+            // Carries custom data (an Epic Loot enchantment, say), so it is more than a plain stack of its prefab.
+            internal bool Custom;
+        }
+
+        internal long ClanId;
+        // One per shared tab: the character name of whoever has it open, "" for nobody.
+        internal List<string> OpenBy = new List<string>();
+        internal List<Item> Items = new List<Item>();
+
+        internal void Write(ZPackage pkg) {
+            pkg.Write(ClanId);
+            pkg.Write(OpenBy.Count);
+            foreach (string name in OpenBy) { pkg.Write(name ?? ""); }
+            pkg.Write(Items.Count);
+            foreach (Item item in Items) {
+                pkg.Write(item.Tab);
+                pkg.Write(item.Prefab ?? "");
+                pkg.Write(item.Stack);
+                pkg.Write(item.Quality);
+                pkg.Write(item.X);
+                pkg.Write(item.Y);
+                pkg.Write(item.Custom);
+            }
+        }
+
+        internal static StorageContents Read(ZPackage pkg) {
+            StorageContents contents = new StorageContents { ClanId = pkg.ReadLong() };
+            int tabs = pkg.ReadInt();
+            for (int i = 0; i < tabs; i++) { contents.OpenBy.Add(pkg.ReadString()); }
+            int items = pkg.ReadInt();
+            for (int i = 0; i < items; i++) {
+                contents.Items.Add(new Item {
+                    Tab = pkg.ReadInt(),
+                    Prefab = pkg.ReadString(),
+                    Stack = pkg.ReadInt(),
+                    Quality = pkg.ReadInt(),
+                    X = pkg.ReadInt(),
+                    Y = pkg.ReadInt(),
+                    Custom = pkg.ReadBool(),
+                });
+            }
+            return contents;
+        }
     }
 }

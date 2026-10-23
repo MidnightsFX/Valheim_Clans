@@ -113,6 +113,8 @@ namespace Clans.Client {
             BountyPins.Reset();
             PlayerMap.Reset();
             WeeklyClock.DebugOffsetSeconds = 0;
+            // Other mods' cached answers are now stale: nobody is in a clan until the next world says otherwise.
+            ApiEvents.RaiseChanged();
         }
 
         [HarmonyPatch(typeof(Player), nameof(Player.OnSpawned))]

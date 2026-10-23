@@ -327,6 +327,7 @@ namespace Clans {
                     clan.Level = level;
                     clan.LevelContributions.Clear();
                     clan.Xp = Math.Max(clan.Xp, ClansSettings.Levels.Get(level).XpRequired);
+                    ApiEvents.LevelChanged(clan, current);
                     if (level > current) {
                         ClanRules.Log(clan, "$clans_log_levelup", level.ToString());
                         ClanService.NotifyClan(clan, null, "$clans_notice_levelup", level.ToString());

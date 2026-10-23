@@ -58,6 +58,8 @@ namespace Clans.Server {
 
         internal static void Flush() {
             if (ClanStore.State == null) { return; }
+            // Other mods on the server hear about it once per flush too (Clans.API change listeners).
+            bool changed = directoryDirty || rosterDirty || accountDirty.Count > 0 || detailDirty.Count > 0;
             if (directoryDirty) {
                 directoryDirty = false;
                 directoryVersion++;
@@ -86,6 +88,7 @@ namespace Clans.Server {
                 }
                 detailDirty.Clear();
             }
+            if (changed) { ApiEvents.RaiseChanged(); }
         }
 
         // Everything a player needs after joining.
@@ -122,8 +125,7 @@ namespace Clans.Server {
             pkg.Write(directoryVersion);
             pkg.Write(state.Clans.Count);
             foreach (ClanRecord clan in state.Clans.Values) {
-                MemberRecord leader = ClanRules.Leader(clan);
-                ClanSummary.Write(pkg, clan, ClanRules.Level(clan), leader?.LastCharacterName ?? "");
+                ClanSummary.Write(pkg, clan, ClanRules.Level(clan), ClanRules.Leader(clan));
             }
             List<WarRecord> wars = state.Wars.Where(w => w.State != WarState.Ended).ToList();
             pkg.Write(wars.Count);
@@ -141,6 +143,13 @@ namespace Clans.Server {
                     Name = sender.CharacterName,
                     ClanId = record?.ClanId ?? 0,
                 };
+                ClanRecord clan = ClanRules.Clan(entry.ClanId);
+                MemberRecord member = ClanRules.Member(clan, sender.Account);
+                if (member != null) {
+                    entry.RankId = member.RankId;
+                    entry.RankIndex = ClanRules.RankIndex(clan, member.RankId);
+                    entry.RankName = entry.RankIndex >= 0 ? clan.Ranks[entry.RankIndex].Name ?? "" : "";
+                }
                 PartyService.FillRoster(entry);
                 entry.Write(pkg);
             }

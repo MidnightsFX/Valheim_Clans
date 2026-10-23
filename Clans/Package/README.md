@@ -1,4 +1,4 @@
-﻿# Clans
+# Clans
 
 Guilds for Valheim, inspired by the guilds of Guild Wars. A clan has its own emblem to fly on banners, ranks
 its leader shapes, a shared treasury and storage, weekly clan activities and a clan level that unlocks
@@ -219,3 +219,10 @@ explains its own settings at the top.
 - **Chatter:** Clans chat lines go into Chatter's window.
 - **Auga:** open the Clans window with its hotkey, since Auga replaces the inventory screen.
 - **Not compatible** with Smoothbrain's Groups and Guilds mods, which do the same job.
+
+## For mod authors
+
+Other mods can ask Clans who is in which clan, party and raid, each clan's level, and each member's rank and
+rights. On the server they can also add and take a clan's treasury coins and storage items, and hear about
+joins, leaves, rank changes and level ups as they happen. A one-file soft-dependency shim and the full reference are in the
+Clans repository, under `ClansAPI/` and `docs/API.md`.

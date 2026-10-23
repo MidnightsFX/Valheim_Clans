@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using UnityEngine;
 
 namespace Clans.Server {
     // Clan storage. Each tab is a 5x4 inventory saved as a base64 Inventory.Save package in the clan record:
@@ -49,6 +50,7 @@ namespace Clans.Server {
             ClanNet.RegisterServer(Op.StorageSnapshot, OnSnapshot);
             ClanNet.RegisterServer(Op.CloseStorage, OnClose);
             ClanNet.RegisterServer(Op.BuyStorageUpgrade, OnBuyUpgrade);
+            ClanNet.RegisterServer(Op.ReadStorage, OnRead);
         }
 
         internal static void Reset() {
@@ -165,7 +167,10 @@ namespace Clans.Server {
 
         private static void Store(ClanRecord clan, Lease lease, string value) {
             if (lease.Kind == TabKind.Shared) {
-                if (lease.Index < clan.Storage.SharedTabs.Count) { clan.Storage.SharedTabs[lease.Index] = value; }
+                if (lease.Index < clan.Storage.SharedTabs.Count && clan.Storage.SharedTabs[lease.Index] != value) {
+                    clan.Storage.SharedTabs[lease.Index] = value;
+                    ApiEvents.StorageChanged(clan, lease.Index);
+                }
             } else {
                 clan.Storage.PersonalTabs[lease.Account] = value;
             }
@@ -299,9 +304,9 @@ namespace Clans.Server {
             }
         }
 
-        // ---------------------------------------------------------------- the clan paying with stored items
+        // ---------------------------------------------------------------- changing stored tabs (feasts, other mods)
 
-        // One item in a stored tab: where its bytes are and how many it holds.
+        // One item in a stored tab: where its bytes are, how many it holds, and the item as read.
         private sealed class StoredItem {
             internal int Start;
             internal int End;
@@ -309,33 +314,70 @@ namespace Clans.Server {
             internal int Stack;
             // Where its stack is written, or -1 when it holds exactly one (vanilla then writes no stack).
             internal int StackAt = -1;
+            internal ItemDrop.ItemData Data;
         }
 
-        // Takes items (prefab name -> amount) from the clan's shared tabs, all of them or none, and answers null or
-        // an error token. A tab someone has open is left alone: the copy on their screen would put the items back.
-        // Items are matched by prefab alone, whatever their quality, and taken from the first tab and slot on; every
-        // other item keeps its bytes exactly as they were.
-        internal static string TakeFromShared(ClanRecord clan, Dictionary<string, int> items, out string openBy) {
-            openBy = null;
-            Dictionary<int, int> wanted = new Dictionary<int, int>();
-            foreach (KeyValuePair<string, int> item in items) {
-                if (item.Value > 0) { wanted[item.Key.GetStableHashCode()] = item.Value; }
-            }
-            if (wanted.Count == 0) { return null; }
+        // A shared tab being changed: what it holds, new stacks for the items it keeps (0 drops one), and items
+        // added to it as vanilla writes them.
+        private sealed class TabEdit {
+            internal int Index;
+            internal byte[] Bytes;
+            internal List<StoredItem> Items;
+            internal readonly Dictionary<StoredItem, int> Stacks = new Dictionary<StoredItem, int>();
+            internal readonly List<byte[]> Added = new List<byte[]>();
+            // For adding: which cells hold something, and whether new items may be written in this tab's format.
+            internal readonly bool[] Used = new bool[Width * Height];
+            internal bool Appendable;
 
-            Dictionary<int, byte[]> tabs = new Dictionary<int, byte[]>();
-            Dictionary<int, List<StoredItem>> contents = new Dictionary<int, List<StoredItem>>();
-            Dictionary<int, int> available = new Dictionary<int, int>();
+            internal bool Changed => Stacks.Count > 0 || Added.Count > 0;
+            internal int StackOf(StoredItem item) => Stacks.TryGetValue(item, out int stack) ? stack : item.Stack;
+        }
+
+        // Every shared tab nobody has open, read; a tab someone has open is left alone, because the copy on their
+        // screen would undo the change. openBy: who has the first open one, else null.
+        private static List<TabEdit> EditableTabs(ClanRecord clan, out string openBy) {
+            openBy = null;
+            List<TabEdit> tabs = new List<TabEdit>();
             for (int index = 0; index < clan.Storage.SharedTabs.Count; index++) {
                 if (leasesByKey.TryGetValue(Key(clan.Id, TabKind.Shared, index, null), out Lease lease)) {
                     openBy ??= lease.Name;
                     continue;
                 }
                 byte[] bytes = Decode(clan.Storage.SharedTabs[index]);
-                if (TryReadItems(bytes, out List<StoredItem> stored) == false) { continue; }
-                tabs[index] = bytes;
-                contents[index] = stored;
-                foreach (StoredItem item in stored) {
+                if (bytes.Length == 0) { bytes = EmptyTab(); }
+                if (TryReadItems(bytes, out List<StoredItem> items) == false) { continue; }
+                tabs.Add(new TabEdit { Index = index, Bytes = bytes, Items = items });
+            }
+            return tabs;
+        }
+
+        // Stores the tabs that changed.
+        private static void Save(ClanRecord clan, List<TabEdit> tabs) {
+            foreach (TabEdit tab in tabs) {
+                if (tab.Changed == false) { continue; }
+                clan.Storage.SharedTabs[tab.Index] = Convert.ToBase64String(Rewrite(tab));
+                ApiEvents.StorageChanged(clan, tab.Index);
+            }
+            ClanStore.MarkDirtySoon();
+        }
+
+        internal enum TakeResult { Taken, Short, TabOpen }
+
+        // Takes items (prefab name -> amount) from the clan's shared tabs, all of them or none. TabOpen: too few
+        // without the tabs someone has open. Items are matched by prefab alone, whatever their quality, and taken
+        // from the first tab and slot on; every other item keeps its bytes exactly as they were.
+        internal static TakeResult TryTakeShared(ClanRecord clan, Dictionary<string, int> items, out string openBy) {
+            openBy = null;
+            Dictionary<int, int> wanted = new Dictionary<int, int>();
+            foreach (KeyValuePair<string, int> item in items) {
+                if (item.Value > 0) { wanted[item.Key.GetStableHashCode()] = item.Value; }
+            }
+            if (wanted.Count == 0) { return TakeResult.Taken; }
+
+            List<TabEdit> tabs = EditableTabs(clan, out openBy);
+            Dictionary<int, int> available = new Dictionary<int, int>();
+            foreach (TabEdit tab in tabs) {
+                foreach (StoredItem item in tab.Items) {
                     if (wanted.ContainsKey(item.Prefab)) {
                         available.TryGetValue(item.Prefab, out int have);
                         available[item.Prefab] = have + item.Stack;
@@ -344,16 +386,115 @@ namespace Clans.Server {
             }
             foreach (KeyValuePair<int, int> need in wanted) {
                 available.TryGetValue(need.Key, out int have);
-                if (have < need.Value) { return openBy != null ? "$clans_err_feast_storage_open" : "$clans_err_feast_storage_short"; }
+                if (have < need.Value) { return openBy != null ? TakeResult.TabOpen : TakeResult.Short; }
             }
 
-            foreach (int index in tabs.Keys.OrderBy(i => i)) {
-                List<StoredItem> stored = contents[index];
-                if (stored.Any(item => wanted.TryGetValue(item.Prefab, out int left) && left > 0) == false) { continue; }
-                clan.Storage.SharedTabs[index] = Convert.ToBase64String(Without(tabs[index], stored, wanted));
+            foreach (TabEdit tab in tabs) {
+                foreach (StoredItem item in tab.Items) {
+                    if (wanted.TryGetValue(item.Prefab, out int left) == false || left <= 0) { continue; }
+                    // Only a stack of more than one can be part taken, and those always have their stack written.
+                    int take = Math.Min(left, item.Stack);
+                    wanted[item.Prefab] = left - take;
+                    tab.Stacks[item] = item.Stack - take;
+                }
             }
-            ClanStore.MarkDirtySoon();
-            return null;
+            Save(clan, tabs);
+            return TakeResult.Taken;
+        }
+
+        // For feasts: null, or the error token to show.
+        internal static string TakeFromShared(ClanRecord clan, Dictionary<string, int> items, out string openBy) {
+            switch (TryTakeShared(clan, items, out openBy)) {
+                case TakeResult.Short: return "$clans_err_feast_storage_short";
+                case TakeResult.TabOpen: return "$clans_err_feast_storage_open";
+                default: return null;
+            }
+        }
+
+        // Puts items into the clan's shared tabs, all of them or none; false when they do not fit. Every item needs
+        // its prefab (m_dropPrefab). A plain stackable (no custom data, variant or crafter) first tops up stored stacks
+        // of the same prefab, quality and world level; the rest goes into empty cells, first tab and row first, in
+        // stacks no larger than the item's own. Tabs someone has open are left alone, and new items are only written
+        // into tabs saved in the game's current inventory format (they would not read back in an older one).
+        internal static bool TryAddShared(ClanRecord clan, List<ItemDrop.ItemData> items, out string openBy) {
+            int version = new ZPackage(EmptyTab()).ReadInt();
+            List<TabEdit> tabs = EditableTabs(clan, out openBy);
+            foreach (TabEdit tab in tabs) {
+                tab.Appendable = new ZPackage(tab.Bytes).ReadInt() == version;
+                foreach (StoredItem stored in tab.Items) {
+                    Vector2i at = stored.Data.m_gridPos;
+                    if (at.x >= 0 && at.x < Width && at.y >= 0 && at.y < Height) { tab.Used[at.y * Width + at.x] = true; }
+                }
+            }
+
+            foreach (ItemDrop.ItemData item in items) {
+                int prefab = item.m_dropPrefab.name.GetStableHashCode();
+                int max = Math.Max(1, item.m_shared.m_maxStackSize);
+                int left = item.m_stack;
+                if (max > 1 && Plain(item)) {
+                    foreach (TabEdit tab in tabs) {
+                        foreach (StoredItem stored in tab.Items) {
+                            if (left <= 0) { break; }
+                            if (stored.Prefab != prefab || stored.StackAt < 0 || Plain(stored.Data) == false) { continue; }
+                            if (stored.Data.m_quality != item.m_quality || stored.Data.m_worldLevel != item.m_worldLevel) { continue; }
+                            int stack = tab.StackOf(stored);
+                            int put = Math.Min(left, max - stack);
+                            if (put <= 0) { continue; }
+                            tab.Stacks[stored] = stack + put;
+                            left -= put;
+                        }
+                    }
+                }
+                while (left > 0) {
+                    if (TryFreeCell(tabs, out TabEdit tab, out int x, out int y) == false) { return false; }
+                    int put = Math.Min(left, max);
+                    tab.Added.Add(Record(item, put, x, y));
+                    tab.Used[y * Width + x] = true;
+                    left -= put;
+                }
+            }
+            Save(clan, tabs);
+            return true;
+        }
+
+        private static bool Plain(ItemDrop.ItemData item) {
+            return (item.m_customData == null || item.m_customData.Count == 0) && item.m_variant == 0 && item.m_crafterID == 0;
+        }
+
+        // The first empty cell, row by row, of the first tab new items can be written into.
+        private static bool TryFreeCell(List<TabEdit> tabs, out TabEdit found, out int x, out int y) {
+            foreach (TabEdit tab in tabs) {
+                if (tab.Appendable == false) { continue; }
+                for (int cell = 0; cell < Width * Height; cell++) {
+                    if (tab.Used[cell]) { continue; }
+                    found = tab;
+                    x = cell % Width;
+                    y = cell / Width;
+                    return true;
+                }
+            }
+            found = null;
+            x = -1;
+            y = -1;
+            return false;
+        }
+
+        // An item as vanilla saves it into an inventory, in the given cell.
+        private static byte[] Record(ItemDrop.ItemData item, int stack, int x, int y) {
+            ItemDrop.ItemData copy = item.Clone();
+            copy.m_stack = stack;
+            copy.m_gridPos = new Vector2i(x, y);
+            copy.m_equipped = false;
+            ZPackage pkg = new ZPackage();
+            copy.Save(pkg);
+            return pkg.GetArray();
+        }
+
+        // A tab with nothing in it, as vanilla writes one: the current inventory version and an item count of 0.
+        private static byte[] EmptyTab() {
+            ZPackage pkg = new ZPackage();
+            new Inventory("", null, Width, Height).Save(pkg);
+            return pkg.GetArray();
         }
 
         // A tab's items with their byte ranges, read the way TryCount reads them.
@@ -376,46 +517,91 @@ namespace Clans.Server {
                         Prefab = prefab,
                         Stack = Math.Max(0, data.m_stack),
                         StackAt = (flags & 8) != 0 ? start + 8 + ((flags & 4) != 0 ? 2 : 0) : -1,
+                        Data = data,
                     });
                 }
                 return true;
             } catch (Exception e) {
-                Logger.LogWarning($"Could not read a clan storage tab to pay for a feast: {e.Message}");
+                Logger.LogWarning($"Could not read a clan storage tab: {e.Message}");
                 return false;
             }
         }
 
-        // The tab with what is wanted taken out (wanted is counted down): emptied stacks dropped, the rest copied.
-        private static byte[] Without(byte[] bytes, List<StoredItem> items, Dictionary<int, int> wanted) {
+        // The tab as it will be stored: its inventory version as it was, each kept item's bytes (with its new stack
+        // where that changed), then the added items.
+        private static byte[] Rewrite(TabEdit tab) {
             using (System.IO.MemoryStream stream = new System.IO.MemoryStream())
             using (System.IO.BinaryWriter writer = new System.IO.BinaryWriter(stream)) {
-                // The inventory version, as it was, and the item count, written once the kept items are known.
-                writer.Write(bytes, 0, 4);
+                // The item count is written once the kept items are known.
+                writer.Write(tab.Bytes, 0, 4);
                 writer.Write((ushort)0);
-                int kept = 0;
-                foreach (StoredItem item in items) {
-                    wanted.TryGetValue(item.Prefab, out int left);
-                    int take = Math.Min(left, item.Stack);
-                    if (take > 0) { wanted[item.Prefab] = left - take; }
-                    if (take >= item.Stack) { continue; }
+                int count = 0;
+                foreach (StoredItem item in tab.Items) {
+                    int stack = tab.StackOf(item);
+                    if (stack <= 0) { continue; }
                     byte[] record = new byte[item.End - item.Start];
-                    Array.Copy(bytes, item.Start, record, 0, record.Length);
-                    if (take > 0) {
-                        // Only a stack of more than one can be part taken, and those always have their stack written.
+                    Array.Copy(tab.Bytes, item.Start, record, 0, record.Length);
+                    if (stack != item.Stack && item.StackAt >= 0) {
                         int at = item.StackAt - item.Start;
-                        ushort stack = (ushort)(item.Stack - take);
                         record[at] = (byte)(stack & 0xFF);
                         record[at + 1] = (byte)(stack >> 8);
                     }
                     writer.Write(record);
-                    kept++;
+                    count++;
+                }
+                foreach (byte[] record in tab.Added) {
+                    writer.Write(record);
+                    count++;
                 }
                 writer.Flush();
                 byte[] result = stream.ToArray();
-                result[4] = (byte)(kept & 0xFF);
-                result[5] = (byte)(kept >> 8);
+                result[4] = (byte)(count & 0xFF);
+                result[5] = (byte)(count >> 8);
                 return result;
             }
+        }
+
+        // ---------------------------------------------------------------- reading tabs (other mods)
+
+        // What the shared tabs hold. A tab someone has open is as they last sent it.
+        internal static StorageContents Contents(ClanRecord clan) {
+            StorageContents contents = new StorageContents { ClanId = clan.Id };
+            for (int index = 0; index < clan.Storage.SharedTabs.Count; index++) {
+                contents.OpenBy.Add(leasesByKey.TryGetValue(Key(clan.Id, TabKind.Shared, index, null), out Lease lease) ? lease.Name ?? "" : "");
+                if (TryReadItems(Decode(clan.Storage.SharedTabs[index]), out List<StoredItem> items) == false) { continue; }
+                foreach (StoredItem item in items) {
+                    contents.Items.Add(new StorageContents.Item {
+                        Tab = index,
+                        Prefab = PrefabName(item.Prefab),
+                        Stack = item.Stack,
+                        Quality = item.Data.m_quality,
+                        X = item.Data.m_gridPos.x,
+                        Y = item.Data.m_gridPos.y,
+                        Custom = item.Data.m_customData != null && item.Data.m_customData.Count > 0,
+                    });
+                }
+            }
+            return contents;
+        }
+
+        private static string PrefabName(int hash) {
+            GameObject prefab = ObjectDB.instance != null ? ObjectDB.instance.GetItemPrefab(hash) : null;
+            return prefab != null ? prefab.name : "";
+        }
+
+        // A client's mod asking what its clan's shared tabs hold (Clans.API.RequestStorageJson): the same members
+        // who may open a shared tab may read them.
+        private static void OnRead(ServerRequest request) {
+            if (ClansConfig.EnableStorage.Value == false) { request.Fail("$clans_err_storage_off"); return; }
+            ClanRecord clan = ClanRules.ClanOf(request.Sender.Account);
+            if (clan == null) { request.Fail("$clans_err_not_in_clan"); return; }
+            ClanPermission perms = ClanRules.Permissions(clan, ClanRules.Member(clan, request.Sender.Account));
+            if (perms.Has(ClanPermission.StorageDeposit) == false && perms.Has(ClanPermission.StorageWithdraw) == false) {
+                request.Fail("$clans_err_no_permission");
+                return;
+            }
+            StorageContents contents = Contents(clan);
+            request.Ok(contents.Write);
         }
 
         // ---------------------------------------------------------------- upgrades
@@ -445,6 +631,7 @@ namespace Clans.Server {
             ClanRules.AddTreasury(clan, -def.Cost);
             if (kind == TabKind.Shared) {
                 clan.Storage.SharedTabs.Add("");
+                ApiEvents.StorageChanged(clan, clan.Storage.SharedTabs.Count - 1);
                 ClanRules.Log(clan, "$clans_log_tab_bought", request.Sender.CharacterName, clan.Storage.SharedTabs.Count.ToString(), def.Cost.ToString());
             } else {
                 clan.Storage.PersonalUnlocked = true;

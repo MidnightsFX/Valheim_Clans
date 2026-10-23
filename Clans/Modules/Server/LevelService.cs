@@ -81,6 +81,7 @@ namespace Clans.Server {
             int level = ClanRules.Level(clan) + 1;
             clan.Level = level;
             clan.LevelContributions.Clear();
+            ApiEvents.LevelChanged(clan, level - 1);
             ClanRules.Log(clan, "$clans_log_upgraded", request.Sender.CharacterName, level.ToString());
             ClanService.NotifyClan(clan, null, "$clans_notice_levelup", level.ToString());
             Logger.LogInfo($"{request.Sender.CharacterName} upgraded the clan '{clan.Name}' to level {level}.");

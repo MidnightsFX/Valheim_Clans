@@ -78,10 +78,7 @@ namespace Clans.Server {
         internal static ClanPermission Permissions(ClanRecord clan, MemberRecord member) {
             if (clan == null || member == null) { return ClanPermission.None; }
             int index = RankIndex(clan, member.RankId);
-            ClanPermission permissions = index == 0 ? ClanPermissions.All : clan.Ranks[index].Permissions;
-            // Switched off for everyone, the leader included.
-            if (ClansConfig.TreasuryWithdrawEnabled.Value == false) { permissions &= ~ClanPermission.TreasuryWithdraw; }
-            return permissions;
+            return ClanPermissions.Effective(index, index > 0 ? clan.Ranks[index].Permissions : ClanPermission.None);
         }
 
         internal static bool Can(ClanRecord clan, string account, ClanPermission permission) {
@@ -154,9 +151,11 @@ namespace Clans.Server {
         }
 
         internal static void AddTreasury(ClanRecord clan, long coins) {
+            long before = clan.Treasury;
             clan.Treasury = Math.Max(0, clan.Treasury + coins);
             Broadcaster.MarkDetail(clan.Id);
             ClanStore.MarkDirtySoon();
+            if (clan.Treasury != before) { ApiEvents.TreasuryChanged(clan, clan.Treasury - before); }
         }
     }
 }

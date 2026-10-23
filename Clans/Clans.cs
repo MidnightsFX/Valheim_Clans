@@ -61,6 +61,8 @@ namespace Clans
             ClanNet.Init();
             ClanServer.Init();
             ClanClient.Init();
+            // Change listeners for other mods (API/API.cs).
+            ApiEvents.Init();
             // Totems and race chests, on every machine: the server places them and clients run them.
             Gameplay.Prefabs.Init();
 

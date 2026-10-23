@@ -85,6 +85,16 @@ namespace Clans.Server {
             return raid;
         }
 
+        internal static Party Find(long partyId) {
+            parties.TryGetValue(partyId, out Party party);
+            return party;
+        }
+
+        internal static Raid FindRaid(long raidId) {
+            raids.TryGetValue(raidId, out Raid raid);
+            return raid;
+        }
+
         internal static int SquadOf(Party party) {
             Raid raid = RaidOf(party);
             return raid == null ? 0 : raid.Parties.IndexOf(party.Id) + 1;
@@ -125,6 +135,7 @@ namespace Clans.Server {
             entry.RaidId = party.RaidId;
             entry.Squad = SquadOf(party);
             entry.PartyLeader = party.Leader == entry.Account;
+            entry.RaidLeader = RaidOf(party)?.Leader == entry.Account;
         }
 
         // ---------------------------------------------------------------- lifecycle
@@ -166,7 +177,7 @@ namespace Clans.Server {
             float grace = ClansConfig.DisconnectGraceSeconds.Value;
             foreach (KeyValuePair<string, float> entry in offlineSince.Where(e => now - e.Value > grace).ToList()) {
                 offlineSince.Remove(entry.Key);
-                RemoveFromParty(entry.Key, "$clans_party_log_timed_out");
+                RemoveFromParty(entry.Key, "$clans_party_log_timed_out", "timedOut");
             }
             if (dirtyParties.Count > 0) {
                 foreach (long id in dirtyParties.ToList()) { PushParty(id); }
@@ -199,6 +210,7 @@ namespace Clans.Server {
                 CloseInvite(invite, "$clans_invite_closed_joined");
             }
             MarkParty(party);
+            ApiEvents.PartyJoined(party.Id, leader);
             return party;
         }
 
@@ -285,11 +297,12 @@ namespace Clans.Server {
             }
             NotifyParty(party, joiner.Account, "$clans_notice_party_joined", joiner.CharacterName);
             MarkParty(party);
+            ApiEvents.PartyJoined(party.Id, joiner.Account);
         }
 
         private static void OnLeave(ServerRequest request) {
             if (PartyOf(request.Sender.Account) == null) { request.Fail("$clans_err_not_in_party"); return; }
-            RemoveFromParty(request.Sender.Account, "$clans_notice_party_left");
+            RemoveFromParty(request.Sender.Account, "$clans_notice_party_left", "left");
             request.Ok();
         }
 
@@ -299,7 +312,7 @@ namespace Clans.Server {
             if (party == null) { request.Fail("$clans_err_not_in_party"); return; }
             if (party.Leader != request.Sender.Account) { request.Fail("$clans_err_party_leader_only"); return; }
             if (target == request.Sender.Account || party.Members.Contains(target) == false) { request.Fail("$clans_err_not_in_your_party"); return; }
-            RemoveFromParty(target, "$clans_notice_party_kicked");
+            RemoveFromParty(target, "$clans_notice_party_kicked", "kicked");
             ClanService.Notify(target, "$clans_notice_you_were_kicked_party");
             request.Ok();
         }
@@ -311,15 +324,21 @@ namespace Clans.Server {
             if (party.Leader != request.Sender.Account) { request.Fail("$clans_err_party_leader_only"); return; }
             if (party.Members.Contains(target) == false) { request.Fail("$clans_err_not_in_your_party"); return; }
             party.Leader = target;
+            ApiEvents.PartyLeaderChanged(party.Id, target);
             Raid raid = RaidOf(party);
-            if (raid != null && raid.Leader == request.Sender.Account) { raid.Leader = target; MarkRaid(raid); }
+            if (raid != null && raid.Leader == request.Sender.Account) {
+                raid.Leader = target;
+                ApiEvents.RaidLeaderChanged(raid.Id, target);
+                MarkRaid(raid);
+            }
             NotifyParty(party, null, "$clans_notice_party_leader", NameOf(target));
             MarkParty(party);
             request.Ok();
         }
 
-        // Takes a player out of their party, handing on leadership and dissolving what becomes empty.
-        internal static void RemoveFromParty(string account, string noticeToken) {
+        // Takes a player out of their party, handing on leadership and dissolving what becomes empty. reason, for
+        // other mods (Clans.API): "left", "kicked" or "timedOut".
+        internal static void RemoveFromParty(string account, string noticeToken, string reason) {
             Party party = PartyOf(account);
             if (party == null) { return; }
             party.Members.Remove(account);
@@ -328,6 +347,7 @@ namespace Clans.Server {
             ClanSender session = Sessions.Get(account);
             if (session != null) { SendState(account); }
             Broadcaster.MarkRoster();
+            ApiEvents.PartyLeft(party.Id, account, reason);
 
             if (party.Members.Count == 0) {
                 Disband(party);
@@ -335,6 +355,7 @@ namespace Clans.Server {
             }
             if (party.Leader == account) {
                 party.Leader = party.Members.FirstOrDefault(IsOnline) ?? party.Members[0];
+                ApiEvents.PartyLeaderChanged(party.Id, party.Leader);
             }
             // The raid leader need not lead their own squad: whoever leaves, the raid keeps a leader. It passes
             // to this squad's leader, or another squad leader who is online.
@@ -342,6 +363,7 @@ namespace Clans.Server {
             if (raid != null && raid.Leader == account) {
                 List<string> squadLeaders = raid.Parties.Select(id => parties.TryGetValue(id, out Party p) ? p.Leader : null).Where(l => l != null).ToList();
                 raid.Leader = IsOnline(party.Leader) ? party.Leader : squadLeaders.FirstOrDefault(IsOnline) ?? party.Leader;
+                ApiEvents.RaidLeaderChanged(raid.Id, raid.Leader);
                 MarkRaid(raid);
             }
             // A party of one is not much of a party, but it stays: its leader may be about to invite.
@@ -357,6 +379,7 @@ namespace Clans.Server {
             Raid raid = RaidOf(party);
             if (raid != null) { RemoveFromRaid(raid, party); }
             Broadcaster.MarkRoster();
+            ApiEvents.PartyDisbanded(party.Id);
         }
 
         // ---------------------------------------------------------------- raids
@@ -408,10 +431,12 @@ namespace Clans.Server {
                 raid.Parties.Add(inviting.Id);
                 raids[raid.Id] = raid;
                 inviting.RaidId = raid.Id;
+                ApiEvents.RaidJoined(raid.Id, inviting.Id, 1);
             }
             if (raid.Parties.Count >= ClansConfig.MaxSquadsPerRaid.Value) { request.Fail("$clans_err_raid_full", ClansConfig.MaxSquadsPerRaid.Value.ToString()); return; }
             raid.Parties.Add(theirs.Id);
             theirs.RaidId = raid.Id;
+            ApiEvents.RaidJoined(raid.Id, theirs.Id, raid.Parties.Count);
             NotifyRaid(raid, null, "$clans_notice_raid_joined", request.Sender.CharacterName);
             MarkRaid(raid);
             request.Ok();
@@ -431,15 +456,22 @@ namespace Clans.Server {
             raid.Parties.Remove(party.Id);
             party.RaidId = 0;
             MarkParty(party);
+            ApiEvents.RaidLeft(raid.Id, party.Id);
             if (raid.Parties.Count <= 1) {
                 // One squad left is just a party again.
                 foreach (long id in raid.Parties) {
-                    if (parties.TryGetValue(id, out Party rest)) { rest.RaidId = 0; MarkParty(rest); }
+                    if (parties.TryGetValue(id, out Party rest)) {
+                        rest.RaidId = 0;
+                        MarkParty(rest);
+                        ApiEvents.RaidLeft(raid.Id, rest.Id);
+                    }
                 }
                 raids.Remove(raid.Id);
+                ApiEvents.RaidDisbanded(raid.Id);
             } else {
                 if (party.Members.Contains(raid.Leader) || PartyOf(raid.Leader)?.RaidId != raid.Id) {
                     raid.Leader = parties[raid.Parties[0]].Leader;
+                    ApiEvents.RaidLeaderChanged(raid.Id, raid.Leader);
                 }
                 MarkRaid(raid);
             }
@@ -463,7 +495,12 @@ namespace Clans.Server {
             from.Members.Remove(target);
             to.Members.Add(target);
             partyOf[target] = to.Id;
-            if (from.Leader == target && from.Members.Count > 0) { from.Leader = from.Members[0]; }
+            ApiEvents.PartyLeft(from.Id, target, "moved");
+            ApiEvents.PartyJoined(to.Id, target);
+            if (from.Leader == target && from.Members.Count > 0) {
+                from.Leader = from.Members[0];
+                ApiEvents.PartyLeaderChanged(from.Id, from.Leader);
+            }
             if (from.Members.Count == 0) { Disband(from); } else { MarkParty(from); }
             MarkRaid(raid);
             Broadcaster.MarkRoster();
@@ -478,6 +515,7 @@ namespace Clans.Server {
             if (raid.Leader != request.Sender.Account) { request.Fail("$clans_err_raid_leader_only"); return; }
             if (PartyOf(target)?.RaidId != raid.Id) { request.Fail("$clans_err_bad_request"); return; }
             raid.Leader = target;
+            ApiEvents.RaidLeaderChanged(raid.Id, target);
             NotifyRaid(raid, null, "$clans_notice_raid_leader", NameOf(target));
             MarkRaid(raid);
             request.Ok();

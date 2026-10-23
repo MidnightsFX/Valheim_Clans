@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <RootNamespace>ClansAPI</RootNamespace>
+    <AssemblyName>ClansAPI</AssemblyName>
+    <LangVersion>10</LangVersion>
+    <FileAlignment>512</FileAlignment>
+    <Deterministic>true</Deterministic>
+    <!-- No assembly attributes at all: the shim is deliberately Version 0.0.0.0, so consumers never
+         need a rebuild when the mod's version moves. -->
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <Optimize>false</Optimize>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+    <DefineConstants>TRACE</DefineConstants>
+    <Optimize>true</Optimize>
+    <DebugType>pdbonly</DebugType>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Only for the game and Unity references JotunnLib's props wire up (resolved through
+         ..\Directory.Build.props). The shim uses no Jotunn type and touches no non-public member,
+         so it runs against the vanilla assemblies as shipped. -->
+    <PackageReference Include="JotunnLib" Version="2.27.1" PrivateAssets="all" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <!-- Compile-only: the output folder should hold the shim and nothing a consumer could mistake for
+       something to ship. -->
+  <ItemDefinitionGroup>
+    <Reference>
+      <Private>false</Private>
+    </Reference>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <Reference Remove="UnityEngine.ProfilerModule" Condition="!Exists('$(VALHEIM_MANAGED)/UnityEngine.ProfilerModule.dll')" />
+  </ItemGroup>
+</Project>

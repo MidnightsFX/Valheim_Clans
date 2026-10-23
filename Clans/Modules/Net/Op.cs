@@ -61,6 +61,8 @@ namespace Clans.Net {
         StorageSnapshot = 161,
         CloseStorage = 162,
         BuyStorageUpgrade = 163,
+        // Another mod asking what the clan's shared tabs hold (Clans.API.RequestStorageJson).
+        ReadStorage = 164,
 
         StartActivity = 170,
         CancelActivity = 171,

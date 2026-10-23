@@ -24,7 +24,8 @@ namespace Clans.Net {
     // through a loopback queue instead, still serialized so the same code paths are exercised, and handled
     // on the next frame so a UI callback never re-enters the server mid-update.
     internal static class ClanNet {
-        internal const byte Proto = 1;
+        // 2: ranks and raid leaders on the roster, the leader's account in the directory (for Clans.API).
+        internal const byte Proto = 2;
         private const string C2S = Clans.PluginGUID + ".C2S";
         private const string S2C = Clans.PluginGUID + ".S2C";
 
