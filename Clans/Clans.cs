@@ -27,7 +27,7 @@ namespace Clans
     {
         public const string PluginGUID = "MidnightsFX.Clans";
         public const string PluginName = "Clans";
-        public const string PluginVersion = "1.0.0";
+        public const string PluginVersion = "1.0.1";
 
         internal static ManualLogSource Log;
         internal ValConfig cfg;
