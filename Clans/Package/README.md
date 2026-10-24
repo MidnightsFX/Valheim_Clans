@@ -1,8 +1,6 @@
 # Clans
 
-Guilds for Valheim, inspired by the guilds of Guild Wars. A clan has its own emblem to fly on banners, ranks
-its leader shapes, a shared treasury and storage, weekly clan activities and a clan level that unlocks
-upgrades.
+Clans for Valheim, inspired by the guilds of Guild Wars. Levels, member ranks, weekly activities, shared storage and party support.
 
 Around that, Clans adds what several large groups need to share one server, whether they play together or
 against each other: parties and raids, shared skill experience, clan wars, chat channels, clan-only map
